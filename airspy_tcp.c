@@ -36,6 +36,7 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 #include <fcntl.h>
+#include <sys/un.h>
 #else
 #include <winsock2.h>
 #include "getopt/getopt.h"
@@ -44,7 +45,7 @@
 
 #include <libairspy/airspy.h>
 
-typedef int socklen_t;
+//typedef int socklen_t;
 
 #define closesocket close
 #define SOCKADDR struct sockaddr
@@ -133,7 +134,7 @@ void usage(void)
                 "\t[-t test mode: send RTL2832 internal counter, not real samples]\n"						// New!
 			
 		"\t[-T enable bias-T on GPIO PIN 0 (works for rtl-sdr.com v3 dongles)]\n"
-                "\t[-P ppm_error (default: 0)]\n");
+                "\t[-P ppm_error (default: 0)]\n"
 	
 		"\t[-D g digital shift (default : 1) ]\n"
 		"\t[-v Verbose ]\n");
@@ -438,9 +439,6 @@ int main(int argc, char **argv)
 			break;
 		case 'a':
 			addr = optarg;
-			break;
-		case 'p':
-			port = atoi(optarg);
 			break;
 		case 'p':
 #ifndef _WIN32
