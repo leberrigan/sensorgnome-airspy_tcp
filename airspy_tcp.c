@@ -493,8 +493,6 @@ int main(int argc, char **argv)
 			fprintf(stderr,"airspy_open() failed: %s (%d)\n", airspy_error_name(r), r);
 			airspy_exit();
 			return -1;
-	} else {
-			fprintf(stderr,"airspy_open() failed: %s (%d)\n", airspy_error_name(r), r);
 	}
 
 
