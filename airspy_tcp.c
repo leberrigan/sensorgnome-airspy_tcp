@@ -424,7 +424,7 @@ int main(int argc, char **argv)
 	char *tmp;
 	int use_unix_sock = 0;
 
-	int num_cons;
+	//int num_cons;
 	while ((opt = getopt(argc, argv, "S:a:p:f:g:s:b:B:n:P:TD:v")) != -1) {
 		switch (opt) {
 		case 'S':
@@ -493,7 +493,10 @@ int main(int argc, char **argv)
 			fprintf(stderr,"airspy_open() failed: %s (%d)\n", airspy_error_name(r), r);
 			airspy_exit();
 			return -1;
+	} else {
+			fprintf(stderr,"airspy_open() failed: %s (%d)\n", airspy_error_name(r), r);
 	}
+
 
 	r = airspy_set_sample_type(dev, AIRSPY_SAMPLE_INT16_IQ);
 	if( r != AIRSPY_SUCCESS ) {
@@ -585,9 +588,13 @@ int main(int argc, char **argv)
 	pthread_mutex_init(&exit_cond_lock, NULL);
 	pthread_mutex_init(&ll_mutex, NULL);
 	pthread_mutex_init(&exit_cond_lock, NULL);
+
+	pthread_condattr_init(&cond_attr);
+	pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC);
+
 	pthread_cond_init(&cond, NULL);
 	pthread_cond_init(&exit_cond, NULL);
-
+/*
 	memset(&local,0,sizeof(local));
 	local.sin_family = AF_INET;
 	local.sin_port = htons(port);
@@ -601,9 +608,74 @@ int main(int argc, char **argv)
 
 	r = fcntl(listensocket, F_GETFL, 0);
 	r = fcntl(listensocket, F_SETFL, r | O_NONBLOCK);
+	
+*/
+
+
+
+#ifndef _WIN32
+	if (use_unix_sock) {
+		listensocket = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+		if (listensocket < 0) {
+			fprintf(stderr, "Error opening unix domain socket.\n");
+			fflush(stderr);
+			exit(4);
+		}
+	} else {
+#endif
+		memset(&local,0,sizeof(local));
+		local.sin_family = AF_INET;
+		local.sin_port = htons(port);
+		local.sin_addr.s_addr = inet_addr(addr);
+
+		listensocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#ifndef _WIN32
+	}
+#else
+	r = 1;
+	setsockopt(listensocket, SOL_SOCKET, SO_REUSEADDR, (char *)&r, sizeof(int));
+	setsockopt(listensocket, SOL_SOCKET, SO_LINGER, (char *)&ling, sizeof(ling));
+#endif
+#ifndef _WIN32
+	if (use_unix_sock) {
+		memset( (char *) &local_u, 0, sizeof(local_u));
+		local_u.sun_family = AF_UNIX;
+		strncpy(local_u.sun_path, sock_path, sizeof(local_u.sun_path) - 1);
+		if (bind(listensocket, (struct sockaddr *) &local_u, sizeof(local_u)) < 0) {
+			fprintf(stderr, "Error binding to unix domain socket at %s\n", sock_path);
+						fflush(stderr);
+			exit(5);
+		}
+	} else {
+#endif
+		bind(listensocket,(struct sockaddr *)&local,sizeof(local));
+#ifdef _WIN32
+		ioctlsocket(listensocket, FIONBIO, &blockmode);
+#else
+		r = fcntl(listensocket, F_GETFL, 0);
+		r = fcntl(listensocket, F_SETFL, r | O_NONBLOCK);
+	}
+#endif
+
+	listen(listensocket,1);
+
+#ifndef _WIN32
+	if (use_unix_sock) {
+		printf("Listening on unix domain socket %s\n", sock_path);
+				fflush(stdout);
+	} else {
+#endif
+		printf("listening...\nUse the device argument 'rtl_tcp=%s:%d' in OsmoSDR "
+			"(gr-osmosdr) source\n"
+			"to receive samples in GRC and control "
+			"rtl_tcp parameters (frequency, gain, ...).\n",
+			addr, port);
+#ifndef _WIN32
+	}
+#endif
 
 	while(1) {
-		num_cons = 0;
+	//	num_cons = 0;
 		while(1) {
 			FD_ZERO(&readfds);
 			FD_SET(listensocket, &readfds);
