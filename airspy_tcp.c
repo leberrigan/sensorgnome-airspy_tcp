@@ -399,7 +399,7 @@ int main(int argc, char **argv)
 {
 	int r, opt;
 	char* addr = "127.0.0.1";
-	uint64_t serno = NULL;
+	uint64_t serno = 0;
 	int port = 1234;
 	uint32_t frequency = 100000000;
 	struct sockaddr_in local, remote;
@@ -482,7 +482,7 @@ int main(int argc, char **argv)
 	if (argc < optind)
 		usage();
 
-	if (serno == NULL) {
+	if (serno == 0) {
 		exit(2);
 	}
 
