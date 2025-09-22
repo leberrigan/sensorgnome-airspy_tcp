@@ -486,7 +486,7 @@ int main(int argc, char **argv)
 		exit(2);
 	}
 
-	r = airspy_open_sn(&dev, serno);
+	r = airspy_open_sn(&dev, (char*)serno);
 	if( r != AIRSPY_SUCCESS ) {
 			fprintf(stderr,"airspy_open() failed: %s (%d)\n", airspy_error_name(r), r);
 			airspy_exit();
