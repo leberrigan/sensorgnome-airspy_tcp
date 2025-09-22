@@ -27,20 +27,21 @@
 #include <stdlib.h>
 
 #ifndef _WIN32
-#include <time.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <netinet/in.h>
-#include <fcntl.h>
-#include <sys/un.h>
+	#include <time.h>
+	#include <unistd.h>
+	#include <arpa/inet.h>
+	#include <sys/socket.h>
+	#include <sys/types.h>
+	#include <sys/socket.h>
+	#include <sys/time.h>
+	#include <netinet/in.h>
+	#include <fcntl.h>
+	#include <sys/un.h>
 #else
-#include <winsock2.h>
-#include "getopt/getopt.h"
+	#include <winsock2.h>
+	#include "getopt/getopt.h"
 #endif
+
 #include <pthread.h>
 
 #include <libairspy/airspy.h>
@@ -73,11 +74,11 @@ struct llist {
 };
 
 #ifndef _WIN32
-/* sample stream header, for embedding in output stream for clients */
-typedef struct {
-        uint32_t size;      // size of this header plus number of sample bytes before next header
-        double ts;          // double timestamp of first sample in stream
-} stream_segment_hdr_t;
+	/* sample stream header, for embedding in output stream for clients */
+	typedef struct {
+			uint32_t size;      // size of this header plus number of sample bytes before next header
+			double ts;          // double timestamp of first sample in stream
+	} stream_segment_hdr_t;
 #endif
 
 typedef struct { /* structure size must be multiple of 2 bytes */
@@ -121,6 +122,7 @@ void usage(void)
 
 	
 		"Usage:\t[-a listen address]\n"
+		"\t[-S device serial number]\n"									// Modified!
 		"\t[-p listen port or unix domain socket path (default: 1234)]\n"									// Modified!
 		"\t[-f frequency to tune to [Hz]]\n"
 		"\t[-g gain (default: 0 for auto)]\n"
@@ -130,8 +132,8 @@ void usage(void)
 		"\t[-B libusb buffer size, multiple of 512 (default: 16 * 32 * 512 bytes, set by library)]\n"		// New!
 		"\t[-n max number of linked list buffers to keep (default: 500)]\n"
 			
-		"\t[-d device index (default: 0)]\n"																// New!
-                "\t[-t test mode: send RTL2832 internal counter, not real samples]\n"						// New!
+	//	"\t[-d device index (default: 0)]\n"																// New!
+    //            "\t[-t test mode: send RTL2832 internal counter, not real samples]\n"						// New!
 			
 		"\t[-T enable bias-T on GPIO PIN 0 (works for rtl-sdr.com v3 dongles)]\n"
                 "\t[-P ppm_error (default: 0)]\n"
@@ -423,7 +425,7 @@ int main(int argc, char **argv)
 	int use_unix_sock = 0;
 
 	int num_cons;
-	while ((opt = getopt(argc, argv, "a:p:f:g:s:b:B:n:d:P:TD:v")) != -1) {
+	while ((opt = getopt(argc, argv, "S:a:p:f:g:s:b:B:n:P:TD:v")) != -1) {
 		switch (opt) {
 		case 'S':
 			serno = strtoull(optarg, NULL, 16);
