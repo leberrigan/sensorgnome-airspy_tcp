@@ -399,7 +399,7 @@ int main(int argc, char **argv)
 {
 	int r, opt;
 	char* addr = "127.0.0.1";
-	char* serno = NULL;
+	uint64_t serno = NULL;
 	int port = 1234;
 	uint32_t frequency = 100000000;
 	struct sockaddr_in local, remote;
@@ -426,7 +426,7 @@ int main(int argc, char **argv)
 	while ((opt = getopt(argc, argv, "a:p:f:g:s:b:B:n:d:P:TD:v")) != -1) {
 		switch (opt) {
 		case 'S':
-			serno = optarg;
+			serno = strtoull(optarg, NULL, 16);
 			break;
 		case 'f':
 			frequency = (uint32_t)atoi(optarg);
@@ -486,7 +486,7 @@ int main(int argc, char **argv)
 		exit(2);
 	}
 
-	r = airspy_open_sn(&dev, (char*)serno);
+	r = airspy_open_sn(&dev, serno);
 	if( r != AIRSPY_SUCCESS ) {
 			fprintf(stderr,"airspy_open() failed: %s (%d)\n", airspy_error_name(r), r);
 			airspy_exit();
