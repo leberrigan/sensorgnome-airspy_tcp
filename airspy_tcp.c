@@ -25,6 +25,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#ifndef _WIN32
+#include <time.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -33,15 +36,24 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 #include <fcntl.h>
+#else
+#include <winsock2.h>
+#include "getopt/getopt.h"
+#endif
 #include <pthread.h>
 
 #include <libairspy/airspy.h>
 
+typedef int socklen_t;
+
+#define closesocket close
 #define SOCKADDR struct sockaddr
 #define SOCKET int
 #define SOCKET_ERROR -1
+#define UNIX_PATH_MAX 108
 
 static SOCKET s;
+static int wait_for_start = 0;
 
 static pthread_t tcp_worker_thread;
 static pthread_t command_thread;
@@ -51,11 +63,21 @@ static pthread_mutex_t exit_cond_lock;
 static pthread_mutex_t ll_mutex;
 static pthread_cond_t cond;
 
+static pthread_condattr_t cond_attr; // for setting CLOCK_MONOTONIC
+
 struct llist {
 	char *data;
 	size_t len;
 	struct llist *next;
 };
+
+#ifndef _WIN32
+/* sample stream header, for embedding in output stream for clients */
+typedef struct {
+        uint32_t size;      // size of this header plus number of sample bytes before next header
+        double ts;          // double timestamp of first sample in stream
+} stream_segment_hdr_t;
+#endif
 
 typedef struct { /* structure size must be multiple of 2 bytes */
 	char magic[4];
@@ -64,6 +86,8 @@ typedef struct { /* structure size must be multiple of 2 bytes */
 } dongle_info_t;
 
 static struct airspy_device* dev = NULL;
+static uint32_t samp_rate = 3000000;
+
 static uint32_t fscount,*supported_samplerates;
 static int verbose=0;
 static int ppm_error=0;
@@ -77,11 +101,13 @@ static struct llist *le_buffer = NULL;
 static int llbuf_num = 64;
 
 static volatile int do_exit = 0;
+static int usb_buffer_size = 0;
+
 
 void usage(void)
 {
-	printf("airspy_tcp, a rtl-tcp compatible, I/Q server for airspy SDR\n\n"
-		"Usage:\t[-a listen address]\n"
+	printf("airspy_tcp: A rtl-tcp compatible, I/Q server for airspy SDR on the SensorGnome\n\n"
+/* 		"Usage:\t[-a listen address]\n"
 		"\t[-p listen port (default: 1234)]\n"
 		"\t[-f frequency to tune to [Hz]]\n"
 		"\t[-g gain (default: 0 for auto)]\n"
@@ -89,6 +115,26 @@ void usage(void)
 		"\t[-n max number of linked list buffer to keep ]\n"
 		"\t[-T enable bias-T ]\n"
 		"\t[-P ppm_error (default: 0) ]\n"
+		"\t[-D g digital shift (default : 1) ]\n"
+		"\t[-v Verbose ]\n"); */
+
+	
+		"Usage:\t[-a listen address]\n"
+		"\t[-p listen port or unix domain socket path (default: 1234)]\n"									// Modified!
+		"\t[-f frequency to tune to [Hz]]\n"
+		"\t[-g gain (default: 0 for auto)]\n"
+		"\t[-s samplerate in Hz (default: 3000000 Hz)]\n"
+		
+		"\t[-b number of buffers (default: 15, set by library)]\n"											// New!
+		"\t[-B libusb buffer size, multiple of 512 (default: 16 * 32 * 512 bytes, set by library)]\n"		// New!
+		"\t[-n max number of linked list buffers to keep (default: 500)]\n"
+			
+		"\t[-d device index (default: 0)]\n"																// New!
+                "\t[-t test mode: send RTL2832 internal counter, not real samples]\n"						// New!
+			
+		"\t[-T enable bias-T on GPIO PIN 0 (works for rtl-sdr.com v3 dongles)]\n"
+                "\t[-P ppm_error (default: 0)]\n");
+	
 		"\t[-D g digital shift (default : 1) ]\n"
 		"\t[-v Verbose ]\n");
 	exit(1);
@@ -102,23 +148,48 @@ static void sighandler(int signum)
 
 static int rx_callback(airspy_transfer_t* transfer)
 {
-	short *buf;
-	int len;
-
-	len=2*transfer->sample_count;
-	buf=(short *)transfer->samples;
-
-	if(!do_exit) {
+	
+	struct timespec ts;
+	if(!do_exit && ! wait_for_start) {
+			
+		short *buf;
+		int len;
+	
+		len=2*transfer->sample_count;
+		buf=(short *)transfer->samples;
+		
+        char *dest;
+		struct llist *rpt = (struct llist*)malloc(sizeof(struct llist));
+	    uint32_t needlen;
+		
+		#ifndef _WIN32
+			stream_segment_hdr_t *hdr;
+			needlen = len + sizeof(stream_segment_hdr_t);
+		#else
+			needlen = len;
+		#endif
+	
+		rpt->data = (char*)malloc(needlen);
+		dest = rpt->data;
+		
+		#ifndef _WIN32
+			/* fill in stream_segment_hdr_t and set dest to point after it  */
+			hdr = (stream_segment_hdr_t *) rpt->data;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			/* set start-of-buffer timestamp to current clock minus (# frames) * rate */
+			hdr->ts = ts.tv_sec + ts.tv_nsec / 1.0e9 - (len / 2.0) / samp_rate;
+			hdr->size = len + sizeof(stream_segment_hdr_t);
+			dest += sizeof(stream_segment_hdr_t);
+		#endif
+	
 		int i;
 		char *data;
-		struct llist *rpt;
-
-		rpt = (struct llist*)malloc(sizeof(struct llist));
-		rpt->data = malloc(len);
+	
 		rpt->len = len;
 		rpt->next = NULL;
 
 		data=rpt->data;
+	
 		for(i=0;i<len;i++,buf++,data++) {
 			short v=*buf<<dshift;
 			short o;
@@ -157,6 +228,7 @@ static int rx_callback(airspy_transfer_t* transfer)
 
 		pthread_cond_signal(&cond);
 		pthread_mutex_unlock(&ll_mutex);
+		
 	}
 	return 0;
 }
@@ -326,9 +398,13 @@ int main(int argc, char **argv)
 {
 	int r, opt;
 	char* addr = "127.0.0.1";
+	char* serno = NULL;
 	int port = 1234;
-	uint32_t frequency = 100000000,samp_rate = 0;
+	uint32_t frequency = 100000000;
 	struct sockaddr_in local, remote;
+	uint32_t buf_num = 0;
+	int dev_index = 0;
+	int dev_given = 0;
 	int gain = 0;
 	struct llist *curelem,*prev;
 	pthread_attr_t attr;
@@ -340,9 +416,17 @@ int main(int argc, char **argv)
 	fd_set readfds;
 	dongle_info_t dongle_info;
 	struct sigaction sigact, sigign;
+	char sock_path[1 + UNIX_PATH_MAX];
+	struct sockaddr_un local_u;
+	char *tmp;
+	int use_unix_sock = 0;
 
-	while ((opt = getopt(argc, argv, "a:p:f:g:s:b:n:d:P:TD:v")) != -1) {
+	int num_cons;
+	while ((opt = getopt(argc, argv, "a:p:f:g:s:b:B:n:d:P:TD:v")) != -1) {
 		switch (opt) {
+		case 'S':
+			serno = optarg;
+			break;
 		case 'f':
 			frequency = (uint32_t)atoi(optarg);
 			break;
@@ -358,8 +442,16 @@ int main(int argc, char **argv)
 		case 'p':
 			port = atoi(optarg);
 			break;
-		case 'n':
-			llbuf_num = atoi(optarg);
+		case 'p':
+#ifndef _WIN32
+			port = (int)strtol(optarg, &tmp, 0);
+			if (*tmp != '\0') {
+				strncpy(sock_path, optarg, UNIX_PATH_MAX);
+				use_unix_sock = 1;
+			}
+#else
+			port = atoi(optarg);
+#endif
 			break;
 		case 'T':
 			enable_biastee = 1;
@@ -374,6 +466,13 @@ int main(int argc, char **argv)
 			verbose = 1;
 			break;
 		case 'b':
+			buf_num = atoi(optarg);
+			break;
+		case 'B':
+			usb_buffer_size = atoi(optarg);
+			break;
+		case 'n':
+			llbuf_num = atoi(optarg);
 			break;
 
 		default:
@@ -385,37 +484,41 @@ int main(int argc, char **argv)
 	if (argc < optind)
 		usage();
 
-        r = airspy_open(&dev);
-        if( r != AIRSPY_SUCCESS ) {
-                fprintf(stderr,"airspy_open() failed: %s (%d)\n", airspy_error_name(r), r);
-                airspy_exit();
-                return -1;
-        }
+	if (serno == NULL) {
+		exit(2);
+	}
 
-        r = airspy_set_sample_type(dev, AIRSPY_SAMPLE_INT16_IQ);
-        if( r != AIRSPY_SUCCESS ) {
-                fprintf(stderr,"airspy_set_sample_type() failed: %s (%d)\n", airspy_error_name(r), r);
-                airspy_close(dev);
-                airspy_exit();
-                return -1;
-        }
+	r = airspy_open_sn(&dev, serno);
+	if( r != AIRSPY_SUCCESS ) {
+			fprintf(stderr,"airspy_open() failed: %s (%d)\n", airspy_error_name(r), r);
+			airspy_exit();
+			return -1;
+	}
+
+	r = airspy_set_sample_type(dev, AIRSPY_SAMPLE_INT16_IQ);
+	if( r != AIRSPY_SUCCESS ) {
+			fprintf(stderr,"airspy_set_sample_type() failed: %s (%d)\n", airspy_error_name(r), r);
+			airspy_close(dev);
+			airspy_exit();
+			return -1;
+	}
 
 	airspy_set_packing(dev, 1);
 
-        r=airspy_get_samplerates(dev, &fscount, 0);
-        if( r != AIRSPY_SUCCESS ) {
-                fprintf(stderr,"airspy_get_sample_rate() failed: %s (%d)\n", airspy_error_name(r), r);
-                airspy_close(dev);
-                airspy_exit();
-                return -1;
+	r=airspy_get_samplerates(dev, &fscount, 0);
+	if( r != AIRSPY_SUCCESS ) {
+			fprintf(stderr,"airspy_get_sample_rate() failed: %s (%d)\n", airspy_error_name(r), r);
+			airspy_close(dev);
+			airspy_exit();
+			return -1;
 	}
-        supported_samplerates = (uint32_t *) malloc(fscount * sizeof(uint32_t));
-        r=airspy_get_samplerates(dev, supported_samplerates, fscount);
-        if( r != AIRSPY_SUCCESS ) {
-                fprintf(stderr,"airspy_get_sample_rate() failed: %s (%d)\n", airspy_error_name(r), r);
-                airspy_close(dev);
-                airspy_exit();
-                return -1;
+	supported_samplerates = (uint32_t *) malloc(fscount * sizeof(uint32_t));
+	r=airspy_get_samplerates(dev, supported_samplerates, fscount);
+	if( r != AIRSPY_SUCCESS ) {
+			fprintf(stderr,"airspy_get_sample_rate() failed: %s (%d)\n", airspy_error_name(r), r);
+			airspy_close(dev);
+			airspy_exit();
+			return -1;
 	}
 
 	if(samp_rate) {
@@ -437,20 +540,20 @@ int main(int argc, char **argv)
 	}
 
 	/* Set the frequency */
-        r = set_freq(frequency);
-        if( r != AIRSPY_SUCCESS ) {
-                fprintf(stderr,"airspy_set_freq() failed: %s (%d)\n", airspy_error_name(r), r);
-                airspy_close(dev);
-                airspy_exit();
-                return -1;
-        }
+	r = set_freq(frequency);
+	if( r != AIRSPY_SUCCESS ) {
+			fprintf(stderr,"airspy_set_freq() failed: %s (%d)\n", airspy_error_name(r), r);
+			airspy_close(dev);
+			airspy_exit();
+			return -1;
+	}
 
-        if (0 == gain) {
-		 /* Enable automatic gain */
+	if (0 == gain) {
+	 /* Enable automatic gain */
 		r=set_agc(1);
-       		if( r != AIRSPY_SUCCESS ) {
-               		fprintf(stderr,"airspy_set agc failed: %s (%d)\n", airspy_error_name(r), r);
-       		}
+		if( r != AIRSPY_SUCCESS ) {
+				fprintf(stderr,"airspy_set agc failed: %s (%d)\n", airspy_error_name(r), r);
+		}
 	} else {
         	r = airspy_set_linearity_gain(dev,(gain+250)/37);
        		if( r != AIRSPY_SUCCESS ) {
@@ -462,13 +565,13 @@ int main(int argc, char **argv)
 		if(verbose) fprintf(stderr, "Tuner gain set to %f dB.\n", gain/10.0);
 	}
 
-        r = airspy_set_rf_bias(dev, enable_biastee);
-        if( r != AIRSPY_SUCCESS ) {
-                fprintf(stderr,"airspy_set_rf_bias() failed: %s (%d)\n", airspy_error_name(r), r);
-                airspy_close(dev);
-                airspy_exit();
-                return -1;
-        }
+	r = airspy_set_rf_bias(dev, enable_biastee);
+	if( r != AIRSPY_SUCCESS ) {
+			fprintf(stderr,"airspy_set_rf_bias() failed: %s (%d)\n", airspy_error_name(r), r);
+			airspy_close(dev);
+			airspy_exit();
+			return -1;
+	}
 
 	sigact.sa_handler = sighandler;
 	sigemptyset(&sigact.sa_mask);
@@ -500,14 +603,7 @@ int main(int argc, char **argv)
 	r = fcntl(listensocket, F_SETFL, r | O_NONBLOCK);
 
 	while(1) {
-		printf("listening...\n");
-		printf("Use the device argument 'rtl_tcp=%s:%d' in OsmoSDR "
-		       "(gr-osmosdr) source\n"
-		       "to receive samples in GRC and control "
-		       "parameters (frequency, gain, ...).\n",
-		       addr, port);
-		listen(listensocket,1);
-
+		num_cons = 0;
 		while(1) {
 			FD_ZERO(&readfds);
 			FD_SET(listensocket, &readfds);
@@ -516,7 +612,7 @@ int main(int argc, char **argv)
 			r = select(listensocket+1, &readfds, NULL, NULL, &tv);
 			if(do_exit) {
 				goto out;
-			} else if(r) {
+			} else if(r>0) {
 				rlen = sizeof(remote);
 				s = accept(listensocket,(struct sockaddr *)&remote, &rlen);
 				break;
@@ -549,7 +645,7 @@ int main(int argc, char **argv)
 		fprintf(stderr,"start rx\n");
 		r = airspy_start_rx(dev, rx_callback, NULL);
 		if( r != AIRSPY_SUCCESS ) {
-        		fprintf(stderr,"airspy_start_rx() failed: %s (%d)\n", airspy_error_name(r), r);
+        	fprintf(stderr,"airspy_start_rx() failed: %s (%d)\n", airspy_error_name(r), r);
 			break;
 		}
 
@@ -560,11 +656,11 @@ int main(int argc, char **argv)
 
 		fprintf(stderr,"stop rx\n");
 
-                r = airspy_stop_rx(dev);
-                if( r != AIRSPY_SUCCESS ) {
-                        fprintf(stderr,"airspy_stop_rx() failed: %s (%d)\n", airspy_error_name(r), r);
+		r = airspy_stop_rx(dev);
+		if( r != AIRSPY_SUCCESS ) {
+			fprintf(stderr,"airspy_stop_rx() failed: %s (%d)\n", airspy_error_name(r), r);
 			break;
-                }
+		}
 
 		curelem = ls_buffer;
 		while(curelem != 0) {
