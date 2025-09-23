@@ -285,26 +285,77 @@ static int rx_callback(airspy_transfer_t* transfer)
 
 static void *tcp_worker(void *arg)
 {
-	struct llist *curelem;
+	/* struct llist *curelem;
+	int bytesleft,bytessent, index; */
+
+	struct llist *curelem,*prev;
 	int bytesleft,bytessent, index;
+	struct timeval tv= {1,0};
+	struct timespec ts;
+	fd_set writefds;
+	int r = 0;
 
 	while(1) {
 
-		pthread_mutex_lock(&ll_mutex);
+/* 		pthread_mutex_lock(&ll_mutex);
 		while(ls_buffer==NULL && do_exit==0)
 			pthread_cond_wait(&cond, &ll_mutex);
 
 		if(do_exit) {
 			pthread_mutex_unlock(&ll_mutex);
 			pthread_exit(0);
+		} */
+	
+		if(do_exit)
+			pthread_exit(0);
+
+		pthread_mutex_lock(&ll_mutex);
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+                ts.tv_sec += 5; // timeout in 5 seconds
+		r = pthread_cond_timedwait(&cond, &ll_mutex, &ts);
+		if(r == ETIMEDOUT && ! wait_for_start) {
+			pthread_mutex_unlock(&ll_mutex);
+			fprintf(stderr, "worker cond timeout\n");
+                        fflush(stderr);
+			do_exit = 1;
+			pthread_exit(NULL);
 		}
 
-		curelem = ls_buffer;
+		/* curelem = ls_buffer;
 		ls_buffer=ls_buffer->next;
-		global_numq--;
+		global_numq--; */
+		curelem = ll_buffers;
+		ll_buffers = 0;
 		pthread_mutex_unlock(&ll_mutex);
 
-		bytesleft = curelem->len;
+		while(curelem != 0) {
+			bytesleft = curelem->len;
+			index = 0;
+			bytessent = 0;
+			while(bytesleft > 0) {
+				FD_ZERO(&writefds);
+				FD_SET(s[1], &writefds);
+				tv.tv_sec = 1;
+				tv.tv_usec = 0;
+				r = select(s[1]+1, NULL, &writefds, NULL, &tv);
+				if(r > 0 && ! do_exit) {
+					bytessent = send(s[1],	&curelem->data[index], bytesleft, 0);
+					bytesleft -= bytessent;
+					index += bytessent;
+				}
+				if(r < 0 || bytessent == SOCKET_ERROR || do_exit) {
+					fprintf(stderr, "worker socket bye\n");
+                                        fflush(stderr);
+					do_exit = 1;
+					pthread_exit(NULL);
+				}
+			}
+			prev = curelem;
+			curelem = curelem->next;
+			free(prev->data);
+			free(prev);
+		}
+	/* 	bytesleft = curelem->len;
 		index = 0;
 		while(bytesleft > 0) {
 			bytessent = send(s,  &curelem->data[index], bytesleft, 0);
@@ -317,7 +368,7 @@ static void *tcp_worker(void *arg)
 			}
 		}
 		free(curelem->data);
-		free(curelem);
+		free(curelem); */
 	}
 }
 
