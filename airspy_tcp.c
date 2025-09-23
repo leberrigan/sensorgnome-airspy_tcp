@@ -816,7 +816,7 @@ int main(int argc, char **argv)
 
 	while(1) {
 		num_cons = 0;
-		while(1) {
+/* 		while(1) {
 			FD_ZERO(&readfds);
 			FD_SET(listensocket, &readfds);
 			tv.tv_sec = 1;
@@ -829,7 +829,7 @@ int main(int argc, char **argv)
 				s = accept(listensocket,(struct sockaddr *)&remote, &rlen);
 				break;
 			}
-		}
+		} */
 		
 		while(1) {
 			FD_ZERO(&readfds);
