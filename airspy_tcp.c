@@ -97,10 +97,12 @@ static int dshift=1;
 
 static int enable_biastee = 0;
 static int global_numq = 0;
-
+/* 
 static struct llist *ls_buffer = NULL;
 static struct llist *le_buffer = NULL;
-static int llbuf_num = 64;
+static int llbuf_num = 64; */
+static struct llist *ll_buffers = 0;
+static int llbuf_num = 500;
 
 static volatile int do_exit = 0;
 static int usb_buffer_size = 0;
