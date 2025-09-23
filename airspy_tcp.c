@@ -105,6 +105,22 @@ static int llbuf_num = 64;
 static volatile int do_exit = 0;
 static int usb_buffer_size = 0;
 
+/* parameter cache; some airspy_set_XXX methods don't have a corresponding
+   airspy_get_XXX, so we cache successful values here.
+*/
+
+static
+uint32_t p_freq = 0,
+		p_samp_rate = 0,
+		p_gain = 0,
+		p_agc = 0,
+        p_lna_gain = 0,
+		p_mixer_gain = 0,
+		p_vga_gain = 0,
+		p_tuner_gain = 0, 
+		p_bias_tee,
+        p_streaming = 0;
+
 
 void usage(void)
 {
@@ -292,7 +308,6 @@ static int set_agc(uint8_t value)
         return r;
 }
 
-
 static int set_samplerate(uint32_t fs)
 {
 	int r,i;
@@ -312,7 +327,8 @@ static int set_freq(uint32_t f)
 {
 	int r;
 
-       	r=airspy_set_freq(dev, (uint32_t)((float)f*(1.0+(float)ppm_error/1e6)));
+    r=airspy_set_freq(dev, (uint32_t)((float)f*(1.0+(float)ppm_error/1e6)));
+	
 	return r;
 }
 
@@ -323,6 +339,10 @@ static void *command_worker(void *arg)
 	struct command cmd={0, 0};
 	struct timeval tv= {1, 0};
 	int r = 0;
+	uint32_t tmp;
+	
+	#define REPLY_BUFF_SIZE 1400
+	char rbuf[REPLY_BUFF_SIZE + 1];
 
 	while(1) {
 		left=sizeof(cmd);
@@ -344,55 +364,95 @@ static void *command_worker(void *arg)
 		}
 		switch(cmd.cmd) {
 		case 0x01:
-			if(verbose) printf("set freq %d\n", ntohl(cmd.param));
+			if(verbose) printf("set freq: %d\n", ntohl(cmd.param));
 			set_freq(ntohl(cmd.param));
+			p_freq = (int)ntohl(cmd.param);
 			break;
 		case 0x02:
-			if(verbose) printf("set sample rate : %d\n", ntohl(cmd.param));
+			if(verbose) printf("set sample rate: %d\n", ntohl(cmd.param));
 			set_samplerate(ntohl(cmd.param));
+			p_samp_rate = (int)ntohl(cmd.param);
 			break;
 		case 0x03:
-			if(verbose) printf("set gain mode %d : not implemented \n", ntohl(cmd.param));
-		case 0x04:
-			if(verbose) printf("set gain : %d\n", ntohl(cmd.param));
+			if(verbose) printf("set gain: %d\n", ntohl(cmd.param));
 			airspy_set_linearity_gain(dev,(ntohl(cmd.param)+250)/37);
+			p_gain = (int)ntohl(cmd.param);
+			break;
+		case 0x04:
+			if(verbose) printf("set agc: %d\n", ntohl(cmd.param));
+			set_agc(ntohl(cmd.param));
+			p_agc = (int)ntohl(cmd.param);
 			break;
 		case 0x05:
-			if(verbose) printf("set freq correction %d\n",ntohl(cmd.param));
-			ppm_error=ntohl(cmd.param);
+			if(verbose) printf("set lna gain: %d\n",ntohl(cmd.param));
+			airspy_set_lna_gain(dev, ntohl(cmd.param));
+			p_lna_gain = (int)ntohl(cmd.param);
 			break;
 		case 0x06:
-			if(verbose) printf("set if stage gain %d : not implemented\n",ntohl(cmd.param));
+			if(verbose) printf("set mixer gain: %d\n",ntohl(cmd.param));
+			airspy_set_mixer_gain(dev, ntohl(cmd.param));
+			p_mixer_gain = (int)ntohl(cmd.param);
 			break;
 		case 0x07:
-			if(verbose) printf("set test mode %d: not impmemented\n",ntohl(cmd.param));
+			if(verbose) printf("set vga gain: %d\n",ntohl(cmd.param));
+			airspy_set_vga_gain(dev, ntohl(cmd.param));
+			p_vga_gain = (int)ntohl(cmd.param);
 			break;
 		case 0x08:
-			set_agc(ntohl(cmd.param));
+			if(verbose) printf("set tuner gain: %d \n", ntohl(cmd.param));
+			airspy_set_linearity_gain(dev,ntohl(cmd.param));
+			p_tuner_gain = (int)ntohl(cmd.param);
 			break;
 		case 0x09:
-			if(verbose) printf("set direct sampling %d: not implemented\n",ntohl(cmd.param));
-			break;
-		case 0x0a:
-			if (verbose) printf("set offset tuning %d : not impemented\n",ntohl(cmd.param));
-			break;
-		case 0x0b:
-			if(verbose) printf("set rtl xtal %d : not implemented\n",ntohl(cmd.param));
-			break;
-		case 0x0c:
-			if(verbose) printf("set tuner xtal %d : not implemented\n",ntohl(cmd.param));
-			break;
-		case 0x0d:
-			if(verbose) printf("set tuner gain by index %d \n", ntohl(cmd.param));
-			airspy_set_linearity_gain(dev,ntohl(cmd.param));
-			break;
-		case 0x0e:
-			if(verbose) printf("set bias tee %d\n", ntohl(cmd.param));
+			if(verbose) printf("set bias tee: %d\n", ntohl(cmd.param));
 			airspy_set_rf_bias(dev, (int)ntohl(cmd.param));
+			p_bias_tee = (int)ntohl(cmd.param);
+			break;
+		case 0x60:
+			if (cmd.param) {
+					fprintf(stderr, "start streaming i/q samples\n");
+					fflush(stderr);
+					wait_for_start = 0;
+					p_streaming = 1;
+			} else {
+					fprintf(stderr, "stop streaming i/q samples\n");
+					fflush(stderr);
+					wait_for_start = 1;
+					p_streaming = 0;
+			}
 			break;
 		default:
+			printf("Unknown command %d param %d\n", cmd.cmd, ntohl(cmd.param));
 			break;
 		}
+
+
+
+		sprintf(rbuf, "{\
+			\"frequency\": %d,\
+			\"rate\": %d,\
+			\"gain\": %d,\
+			\"agc\": %d,\
+			\"lna_gain\": %d,\
+			\"mixer_gain\": %d,\
+			\"vga_gain\": %d,\
+			\"tuner_gain\": %d,\
+			\"bias_tee\": %d,\
+			\"streaming\": %d\
+			}\n",
+				p_freq,
+				p_samp_rate,
+				p_gain,
+				p_agc,
+				p_lna_gain,
+				p_mixer_gain,
+				p_vga_gain,
+				p_tuner_gain,
+				p_bias_tee,
+				p_streaming);
+
+		send(s[0], rbuf, strlen(rbuf), 0);
+
 		cmd.cmd = 0xff;
 	}
 }
