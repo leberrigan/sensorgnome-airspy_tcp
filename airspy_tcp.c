@@ -439,73 +439,77 @@ static void *command_worker(void *arg)
 				left -= received;
 			}
 			if(received == SOCKET_ERROR || do_exit) {
-				printf("comm recv bye\n");
-				sighandler(0);
+				fprintf(stderr, "comm recv bye\n");
+				fflush(stderr);
+				do_exit = 1;
 				pthread_exit(NULL);
 			}
 		}
+		fprintf(stderr, "cmd %d param %d\n", cmd.cmd, ntohl(cmd.param));
+		fflush(stderr);
+
 		switch(cmd.cmd) {
-		case 0x01:
-			if(verbose) printf("set freq: %d\n", ntohl(cmd.param));
-			set_freq(ntohl(cmd.param));
-			p_freq = (int)ntohl(cmd.param);
-			break;
-		case 0x02:
-			if(verbose) printf("set sample rate: %d\n", ntohl(cmd.param));
-			set_samplerate(ntohl(cmd.param));
-			p_samp_rate = (int)ntohl(cmd.param);
-			break;
-		case 0x03:
-			if(verbose) printf("set gain: %d\n", ntohl(cmd.param));
-			airspy_set_linearity_gain(dev,(ntohl(cmd.param)+250)/37);
-			p_gain = (int)ntohl(cmd.param);
-			break;
-		case 0x04:
-			if(verbose) printf("set agc: %d\n", ntohl(cmd.param));
-			set_agc(ntohl(cmd.param));
-			p_agc = (int)ntohl(cmd.param);
-			break;
-		case 0x05:
-			if(verbose) printf("set lna gain: %d\n",ntohl(cmd.param));
-			airspy_set_lna_gain(dev, ntohl(cmd.param));
-			p_lna_gain = (int)ntohl(cmd.param);
-			break;
-		case 0x06:
-			if(verbose) printf("set mixer gain: %d\n",ntohl(cmd.param));
-			airspy_set_mixer_gain(dev, ntohl(cmd.param));
-			p_mixer_gain = (int)ntohl(cmd.param);
-			break;
-		case 0x07:
-			if(verbose) printf("set vga gain: %d\n",ntohl(cmd.param));
-			airspy_set_vga_gain(dev, ntohl(cmd.param));
-			p_vga_gain = (int)ntohl(cmd.param);
-			break;
-		case 0x08:
-			if(verbose) printf("set tuner gain: %d \n", ntohl(cmd.param));
-			airspy_set_linearity_gain(dev,ntohl(cmd.param));
-			p_tuner_gain = (int)ntohl(cmd.param);
-			break;
-		case 0x09:
-			if(verbose) printf("set bias tee: %d\n", ntohl(cmd.param));
-			airspy_set_rf_bias(dev, (int)ntohl(cmd.param));
-			p_bias_tee = (int)ntohl(cmd.param);
-			break;
-		case 0x60:
-			if (cmd.param) {
-					fprintf(stderr, "start streaming i/q samples\n");
-					fflush(stderr);
-					wait_for_start = 0;
-					p_streaming = 1;
-			} else {
-					fprintf(stderr, "stop streaming i/q samples\n");
-					fflush(stderr);
-					wait_for_start = 1;
-					p_streaming = 0;
-			}
-			break;
-		default:
-			printf("Unknown command %d param %d\n", cmd.cmd, ntohl(cmd.param));
-			break;
+			case 0x01:
+				if(verbose) printf("set freq: %d\n", ntohl(cmd.param));
+				set_freq(ntohl(cmd.param));
+				p_freq = (int)ntohl(cmd.param);
+				break;
+			case 0x02:
+				if(verbose) printf("set sample rate: %d\n", ntohl(cmd.param));
+				set_samplerate(ntohl(cmd.param));
+				p_samp_rate = (int)ntohl(cmd.param);
+				break;
+			case 0x03:
+				if(verbose) printf("set gain: %d\n", ntohl(cmd.param));
+				airspy_set_linearity_gain(dev,(ntohl(cmd.param)+250)/37);
+				p_gain = (int)ntohl(cmd.param);
+				break;
+			case 0x04:
+				if(verbose) printf("set agc: %d\n", ntohl(cmd.param));
+				set_agc(ntohl(cmd.param));
+				p_agc = (int)ntohl(cmd.param);
+				break;
+			case 0x05:
+				if(verbose) printf("set lna gain: %d\n",ntohl(cmd.param));
+				airspy_set_lna_gain(dev, ntohl(cmd.param));
+				p_lna_gain = (int)ntohl(cmd.param);
+				break;
+			case 0x06:
+				if(verbose) printf("set mixer gain: %d\n",ntohl(cmd.param));
+				airspy_set_mixer_gain(dev, ntohl(cmd.param));
+				p_mixer_gain = (int)ntohl(cmd.param);
+				break;
+			case 0x07:
+				if(verbose) printf("set vga gain: %d\n",ntohl(cmd.param));
+				airspy_set_vga_gain(dev, ntohl(cmd.param));
+				p_vga_gain = (int)ntohl(cmd.param);
+				break;
+			case 0x08:
+				if(verbose) printf("set tuner gain: %d \n", ntohl(cmd.param));
+				airspy_set_linearity_gain(dev,ntohl(cmd.param));
+				p_tuner_gain = (int)ntohl(cmd.param);
+				break;
+			case 0x09:
+				if(verbose) printf("set bias tee: %d\n", ntohl(cmd.param));
+				airspy_set_rf_bias(dev, (int)ntohl(cmd.param));
+				p_bias_tee = (int)ntohl(cmd.param);
+				break;
+			case 0x60:
+				if (cmd.param) {
+						fprintf(stderr, "start streaming i/q samples\n");
+						fflush(stderr);
+						wait_for_start = 0;
+						p_streaming = 1;
+				} else {
+						fprintf(stderr, "stop streaming i/q samples\n");
+						fflush(stderr);
+						wait_for_start = 1;
+						p_streaming = 0;
+				}
+				break;
+			default:
+				printf("Unknown command %d param %d\n", cmd.cmd, ntohl(cmd.param));
+				break;
 		}
 
 
