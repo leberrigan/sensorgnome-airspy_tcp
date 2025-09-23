@@ -428,18 +428,18 @@ static void *command_worker(void *arg)
 
 
 
-		sprintf(rbuf, "{\
-			\"frequency\": %d,\
-			\"rate\": %d,\
-			\"gain\": %d,\
-			\"agc\": %d,\
-			\"lna_gain\": %d,\
-			\"mixer_gain\": %d,\
-			\"vga_gain\": %d,\
-			\"tuner_gain\": %d,\
-			\"bias_tee\": %d,\
-			\"streaming\": %d\
-			}\n",
+		sprintf(rbuf, "{"
+				"\"frequency\": %d,"
+				"\"rate\": %d,"
+				"\"gain\": %d,"
+				"\"agc\": %d,"
+				"\"lna_gain\": %d,"
+				"\"mixer_gain\": %d,"
+				"\"vga_gain\": %d,"
+				"\"tuner_gain\": %d,"
+				"\"bias_tee\": %d,"
+				"\"streaming\": %d"
+				"}\n",
 				p_freq,
 				p_samp_rate,
 				p_gain,
@@ -451,7 +451,7 @@ static void *command_worker(void *arg)
 				p_bias_tee,
 				p_streaming);
 
-		send(s[0], rbuf, strlen(rbuf), 0);
+		send(s, rbuf, strlen(rbuf), 0);
 
 		cmd.cmd = 0xff;
 	}
