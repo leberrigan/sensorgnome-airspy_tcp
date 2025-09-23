@@ -113,7 +113,6 @@ static int usb_buffer_size = 0;
 
 static
 uint32_t p_freq = 0,
-		p_samp_rate = 0,
 		p_gain = 0,
 		p_agc = 0,
         p_lna_gain = 0,
@@ -416,6 +415,9 @@ static int set_freq(uint32_t f)
 
 static void *command_worker(void *arg)
 {
+	fprintf(stderr, "Command worker started.\n");
+	fflush(stderr);
+
 	int left, received = 0;
 	fd_set readfds;
 	struct command cmd={0, 0};
@@ -447,7 +449,6 @@ static void *command_worker(void *arg)
 		}
 		fprintf(stderr, "cmd %d param %d\n", cmd.cmd, ntohl(cmd.param));
 		fflush(stderr);
-
 		switch(cmd.cmd) {
 			case 0x01:
 				if(verbose) printf("set freq: %d\n", ntohl(cmd.param));
@@ -457,7 +458,7 @@ static void *command_worker(void *arg)
 			case 0x02:
 				if(verbose) printf("set sample rate: %d\n", ntohl(cmd.param));
 				set_samplerate(ntohl(cmd.param));
-				p_samp_rate = (int)ntohl(cmd.param);
+				samp_rate = (int)ntohl(cmd.param);
 				break;
 			case 0x03:
 				if(verbose) printf("set gain: %d\n", ntohl(cmd.param));
@@ -512,7 +513,8 @@ static void *command_worker(void *arg)
 				break;
 		}
 
-
+		// Clear memory buffer
+		memset(rbuf, 0, sizeof(rbuf));
 
 		sprintf(rbuf, "{"
 				"\"frequency\": %d,"
@@ -527,7 +529,7 @@ static void *command_worker(void *arg)
 				"\"streaming\": %d"
 				"}\n",
 				p_freq,
-				p_samp_rate,
+				samp_rate,
 				p_gain,
 				p_agc,
 				p_lna_gain,
@@ -806,7 +808,7 @@ int main(int argc, char **argv)
 #ifndef _WIN32
 	if (use_unix_sock) {
 		printf("Listening on unix domain socket %s\n", sock_path);
-				fflush(stdout);
+		fflush(stdout);
 	} else {
 #endif
 		printf("listening...\nUse the device argument 'rtl_tcp=%s:%d' in OsmoSDR "
@@ -846,6 +848,12 @@ int main(int argc, char **argv)
 			} else if(r > 0) {
 				rlen = sizeof(remote);
 				s[num_cons] = accept(listensocket,(struct sockaddr *)&remote, &rlen);
+				if (s[0] < 0) {
+					// handle error
+					fprintf(stderr, "socket failed: %s\n", strerror(errno));
+					fflush(stderr);
+				}
+
 				setsockopt(s[num_cons], SOL_SOCKET, SO_LINGER, (char *)&ling, sizeof(ling));
 				if (num_cons == 0) {
 					memset(&dongle_info, 0, sizeof(dongle_info));
@@ -873,7 +881,9 @@ int main(int argc, char **argv)
 		} else {
 			wait_for_start = 1;
 		}
-		printf("client accepted!\n");
+		fprintf(stderr, "Client accepted!\n");
+		fflush(stderr);
+
 
 /* 		memset(&dongle_info, 0, sizeof(dongle_info));
 		memcpy(&dongle_info.magic, "RTL0", 4);
@@ -889,8 +899,14 @@ int main(int argc, char **argv)
 
 		pthread_attr_init(&attr);
 		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-		r = pthread_create(&tcp_worker_thread, &attr, tcp_worker, NULL);
-		r = pthread_create(&command_thread, &attr, command_worker, NULL);
+		if (pthread_create(&tcp_worker_thread, &attr, tcp_worker, NULL) != 0) {
+			fprintf(stderr, "Error creating tcp worker thread\n");
+			fflush(stderr);
+		}
+		if (pthread_create(&command_thread, &attr, command_worker, NULL) != 0) {
+			fprintf(stderr, "Error creating command thread\n");
+			fflush(stderr);
+		}
 		pthread_attr_destroy(&attr);
 
 		fprintf(stderr,"start rx\n");
