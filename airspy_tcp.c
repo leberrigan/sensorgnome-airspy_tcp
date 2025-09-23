@@ -171,8 +171,8 @@ static int rx_callback(airspy_transfer_t* transfer)
 	struct timespec ts;
 	if(!do_exit && ! wait_for_start) {
 			
-		short *buf;
-		int len;
+		unsigned char *buf;
+		uint32_t len;
 	
 		len=2*transfer->sample_count;
 		buf=(short *)transfer->samples;
@@ -201,39 +201,44 @@ static int rx_callback(airspy_transfer_t* transfer)
 			dest += sizeof(stream_segment_hdr_t);
 		#endif
 	
-		int i;
-		char *data;
+		/* int i;
+		char *data; */
 	
-		rpt->len = len;
+		memcpy(dest, buf, len);
+
+		rpt->len = needlen;
 		rpt->next = NULL;
 
-		data=rpt->data;
+		/* data=rpt->data; */
 	
-		for(i=0;i<len;i++,buf++,data++) {
+		/* for(i=0;i<len;i++,buf++,data++) {
 			short v=*buf<<dshift;
 			short o;
 
-			 /* stupid added offset, because osmosdr client code */
-			 /* try to compensate rtl dongle offset */
+			 // stupid added offset, because osmosdr client code 
+			 // try to compensate rtl dongle offset 
 			 o=(v-154)>>8;
 
-			/* round to 8bits half up to even */
+			// round to 8bits half up to even
 			if(v&0x80) {
 			 if(v&0x7f) {o++;} else { if(v&0x100) o++;}
 			}
 
 			*data=(unsigned char)((o&0xff)+128);
-		}
+		} */
 
 		pthread_mutex_lock(&ll_mutex);
 
-		  if (ls_buffer == NULL) {
+		/* if (ls_buffer == NULL)
+		{
 			ls_buffer = le_buffer = rpt;
-		  } else {
-			le_buffer->next=rpt;
-			le_buffer=rpt;
-		  }
-		  global_numq++;
+		}
+		else
+		{
+			le_buffer->next = rpt;
+			le_buffer = rpt;
+		}
+		global_numq++;
 
 		if(global_numq>llbuf_num) {
 			struct llist *curelem;
@@ -243,6 +248,30 @@ static int rx_callback(airspy_transfer_t* transfer)
 			global_numq--;
 			free(curelem->data);
 			free(curelem);
+		} */
+
+		if (ll_buffers == NULL) {
+			ll_buffers = rpt;
+		} else {
+			struct llist *cur = ll_buffers;
+			int num_queued = 0;
+
+			while (cur->next != NULL) {
+				cur = cur->next;
+				num_queued++;
+			}
+
+			if(llbuf_num && llbuf_num == num_queued-2){
+				struct llist *curelem;
+
+				free(ll_buffers->data);
+				curelem = ll_buffers->next;
+				free(ll_buffers);
+				ll_buffers = curelem;
+			}
+
+			cur->next = rpt;
+			global_numq = num_queued;
 		}
 
 		pthread_cond_signal(&cond);
