@@ -173,11 +173,11 @@ static int rx_callback(airspy_transfer_t* transfer)
 	struct timespec ts;
 	if(!do_exit && ! wait_for_start) {
 			
-		unsigned char *buf;
+		short *buf;
 		uint32_t len;
 	
 		len=2*transfer->sample_count;
-		buf=(short *)transfer->samples;
+		buf=( short )transfer->samples;
 		
         char *dest;
 		struct llist *rpt = (struct llist*)malloc(sizeof(struct llist));
@@ -421,7 +421,7 @@ static void *command_worker(void *arg)
 	struct command cmd={0, 0};
 	struct timeval tv= {1, 0};
 	int r = 0;
-	uint32_t tmp;
+//	uint32_t tmp;
 	
 	#define REPLY_BUFF_SIZE 1400
 	char rbuf[REPLY_BUFF_SIZE + 1];
@@ -548,8 +548,8 @@ int main(int argc, char **argv)
 	uint32_t frequency = 100000000;
 	struct sockaddr_in local, remote;
 	uint32_t buf_num = 0;
-	int dev_index = 0;
-	int dev_given = 0;
+//	int dev_index = 0;
+//	int dev_given = 0;
 	int gain = 0;
 	struct llist *curelem,*prev;
 	pthread_attr_t attr;
@@ -566,7 +566,7 @@ int main(int argc, char **argv)
 	char *tmp;
 	int use_unix_sock = 0;
 
-	//int num_cons;
+	int num_cons;
 	while ((opt = getopt(argc, argv, "S:a:p:f:g:s:b:B:n:P:TD:v")) != -1) {
 		switch (opt) {
 		case 'S':
@@ -902,7 +902,7 @@ int main(int argc, char **argv)
 		closesocket(s[0]);
 		if (num_cons == 2)
 			closesocket(s[1]);
-			
+
 		fprintf(stderr,"stop rx\n");
 
 		r = airspy_stop_rx(dev);
