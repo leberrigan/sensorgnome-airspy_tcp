@@ -54,7 +54,7 @@
 #define SOCKET_ERROR -1
 #define UNIX_PATH_MAX 108
 
-static SOCKET s;
+static SOCKET s[2];
 static int wait_for_start = 0;
 
 static pthread_t tcp_worker_thread;
@@ -430,12 +430,12 @@ static void *command_worker(void *arg)
 		left=sizeof(cmd);
 		while(left >0) {
 			FD_ZERO(&readfds);
-			FD_SET(s, &readfds);
+			FD_SET(s[0], &readfds);
 			tv.tv_sec = 1;
 			tv.tv_usec = 0;
-			r = select(s+1, &readfds, NULL, NULL, &tv);
+			r = select(s[0]+1, &readfds, NULL, NULL, &tv);
 			if(r) {
-				received = recv(s, (char*)&cmd+(sizeof(cmd)-left), left, 0);
+				received = recv(s[0], (char*)&cmd+(sizeof(cmd)-left), left, 0);
 				left -= received;
 			}
 			if(received == SOCKET_ERROR || do_exit) {
@@ -533,7 +533,7 @@ static void *command_worker(void *arg)
 				p_bias_tee,
 				p_streaming);
 
-		send(s, rbuf, strlen(rbuf), 0);
+		send(s[0], rbuf, strlen(rbuf), 0);
 
 		cmd.cmd = 0xff;
 	}
@@ -815,7 +815,7 @@ int main(int argc, char **argv)
 #endif
 
 	while(1) {
-	//	num_cons = 0;
+		num_cons = 0;
 		while(1) {
 			FD_ZERO(&readfds);
 			FD_SET(listensocket, &readfds);
@@ -830,13 +830,48 @@ int main(int argc, char **argv)
 				break;
 			}
 		}
+		
+		while(1) {
+			FD_ZERO(&readfds);
+			FD_SET(listensocket, &readfds);
+			tv.tv_sec = 1;
+			tv.tv_usec = 0;
+			r = select(listensocket+1, &readfds, NULL, NULL, &tv);
+			if(do_exit) {
+				goto out;
+			} else if(r > 0) {
+				rlen = sizeof(remote);
+				s[num_cons] = accept(listensocket,(struct sockaddr *)&remote, &rlen);
+				setsockopt(s[num_cons], SOL_SOCKET, SO_LINGER, (char *)&ling, sizeof(ling));
+				if (num_cons == 0) {
+					memset(&dongle_info, 0, sizeof(dongle_info));
+					memcpy(&dongle_info.magic, "ASP0", 4);
 
-		setsockopt(s, SOL_SOCKET, SO_LINGER, (char *)&ling, sizeof(ling));
-		r=5;setsockopt(s, SOL_SOCKET, SO_PRIORITY, (char *)&r, sizeof(int));
+					dongle_info.tuner_type = htonl(5);
+					dongle_info.tuner_gain_count = htonl(22);
+					r = send(s[0], (const char *)&dongle_info, sizeof(dongle_info), 0);
+					if (sizeof(dongle_info) != r)
+						printf("failed to send dongle information\n");
+				}
+				++ num_cons;
+#ifndef _WIN32
+				if (! use_unix_sock || num_cons == 2)
+#endif
+					break;
+			}
+		}
 
+		//setsockopt(s[num_cons], SOL_SOCKET, SO_LINGER, (char *)&ling, sizeof(ling));
+		//r=5;setsockopt(s[num_cons], SOL_SOCKET, SO_PRIORITY, (char *)&r, sizeof(int));
+
+		if (num_cons == 1) {
+			s[1] = s[0];
+		} else {
+			wait_for_start = 1;
+		}
 		printf("client accepted!\n");
 
-		memset(&dongle_info, 0, sizeof(dongle_info));
+/* 		memset(&dongle_info, 0, sizeof(dongle_info));
 		memcpy(&dongle_info.magic, "RTL0", 4);
 
 		dongle_info.tuner_type = htonl(5);
@@ -846,7 +881,7 @@ int main(int argc, char **argv)
 		if (sizeof(dongle_info) != r) {
 			printf("failed to send dongle information\n");
 			break;
-		}
+		} */
 
 		pthread_attr_init(&attr);
 		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
@@ -864,8 +899,10 @@ int main(int argc, char **argv)
 		pthread_join(tcp_worker_thread, &status);
 		pthread_join(command_thread, &status);
 
-		close(s);
-
+		closesocket(s[0]);
+		if (num_cons == 2)
+			closesocket(s[1]);
+			
 		fprintf(stderr,"stop rx\n");
 
 		r = airspy_stop_rx(dev);
@@ -874,24 +911,35 @@ int main(int argc, char **argv)
 			break;
 		}
 
-		curelem = ls_buffer;
+		printf("all threads dead..\n");
+		curelem = ll_buffers;
+		ll_buffers = 0;
 		while(curelem != 0) {
 			prev = curelem;
 			curelem = curelem->next;
 			free(prev->data);
 			free(prev);
 		}
-		ls_buffer=le_buffer=NULL;
-		global_numq = 0;
 
 		do_exit = 0;
+		global_numq = 0;
 	}
 
 out:
+	fprintf(stderr, "Closing airspy device.\n");
+	fflush(stderr);
 	airspy_close(dev);
 	airspy_exit();
-	close(listensocket);
-	close(s);
+	closesocket(listensocket);
+	closesocket(s[0]);
+	if (num_cons ==2)
+		closesocket(s[1]);
+#ifdef _WIN32
+	WSACleanup();
+#else
+	if (use_unix_sock)
+		unlink(sock_path);
+#endif
 	printf("bye!\n");
 	return r >= 0 ? r : -r;
 }
