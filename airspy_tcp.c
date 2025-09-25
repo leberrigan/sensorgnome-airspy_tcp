@@ -170,14 +170,27 @@ static int rx_callback(airspy_transfer_t* transfer)
 {
 	
 	struct timespec ts;
+
+/* 	fprintf(stderr, "[rx_callback] do_exit = %d, wait_for_start = %d\n", do_exit, wait_for_start);
+	fflush(stderr); */
+
 	if(!do_exit && ! wait_for_start) {
 			
 		short *buf;
 		uint32_t len;
 	
 		len=2*transfer->sample_count;
-		buf=( short )transfer->samples;
-		
+		buf=( short* )transfer->samples;
+
+		if (transfer->sample_count == 0) {
+			fprintf(stderr, "[rx_callback] Warning: zero samples received\n");
+			fflush(stderr);
+			return 0;
+		} /* else {
+			fprintf(stderr, "[rx_callback] Samples received: %u\n", transfer->sample_count);
+			fflush(stderr);
+		} */
+
         char *dest;
 		struct llist *rpt = (struct llist*)malloc(sizeof(struct llist));
 	    uint32_t needlen;
@@ -251,6 +264,9 @@ static int rx_callback(airspy_transfer_t* transfer)
 			free(curelem);
 		} */
 
+		/* fprintf(stderr, "[rx_callback] Queued %u bytes (samples=%u)\n", needlen, transfer->sample_count);
+		fflush(stderr); */
+
 		if (ll_buffers == NULL) {
 			ll_buffers = rpt;
 		} else {
@@ -307,18 +323,69 @@ static void *tcp_worker(void *arg)
 	
 		if(do_exit)
 			pthread_exit(0);
-
-		pthread_mutex_lock(&ll_mutex);
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-                ts.tv_sec += 5; // timeout in 5 seconds
-		r = pthread_cond_timedwait(&cond, &ll_mutex, &ts);
-		if(r == ETIMEDOUT && ! wait_for_start) {
-			pthread_mutex_unlock(&ll_mutex);
-			fprintf(stderr, "worker cond timeout\n");
-                        fflush(stderr);
-			do_exit = 1;
+/* 
+	 	if (!ts_ptr) {
+			fprintf(stderr, "[tcp_worker] Failed to allocate timespec\n");
 			pthread_exit(NULL);
 		}
+
+		// Get current time
+		clock_gettime(CLOCK_MONOTONIC, ts_ptr);
+
+		// Add 15 seconds to timeout
+		ts_ptr->tv_sec += 15;
+		ts_ptr->tv_nsec += 0; // optional fine-grained delay
+
+		// Normalize nanoseconds
+		if (ts_ptr->tv_nsec >= 1000000000) {
+			ts_ptr->tv_sec += 1;
+			ts_ptr->tv_nsec -= 1000000000;
+		}
+
+		// Log target timeout
+		fprintf(stderr, "[tcp_worker] Timeout target: %ld.%09ld\n", ts_ptr->tv_sec, ts_ptr->tv_nsec);
+
+		// Wait on condition
+		pthread_mutex_lock(&ll_mutex);
+		r = pthread_cond_timedwait(&cond, &ll_mutex, ts_ptr);
+
+		// Log result
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		double waited = (now.tv_sec - ts_ptr->tv_sec) + (now.tv_nsec - ts_ptr->tv_nsec) / 1e9;
+
+		fprintf(stderr, "[tcp_worker] Waited %.6f seconds, return code = %d\n", waited, r);
+ */
+ 
+
+		pthread_mutex_lock(&ll_mutex);
+
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		
+		struct timespec start, end;
+		clock_gettime(CLOCK_MONOTONIC, &start);
+		ts.tv_sec += 5; // timeout in 5 seconds
+		ts.tv_nsec += 0; // optional fine-grained delay
+
+		if (ts.tv_nsec >= 1000000000) {
+			ts.tv_sec += 1;
+			ts.tv_nsec -= 1000000000;
+		}
+
+		// r = pthread_cond_timedwait(&cond, &ll_mutex, &ts);
+		r = pthread_cond_wait(&cond, &ll_mutex);
+
+		
+		if(r == ETIMEDOUT && ! wait_for_start) {
+			pthread_mutex_unlock(&ll_mutex);
+			fprintf(stderr, "Worker cond timeout\n");
+                        fflush(stderr);
+			do_exit = 1;
+			// free(ts_ptr);
+			pthread_exit(NULL);
+		}
+		// free(ts_ptr);
+
 
 		/* curelem = ls_buffer;
 		ls_buffer=ls_buffer->next;
@@ -339,6 +406,8 @@ static void *tcp_worker(void *arg)
 				r = select(s[1]+1, NULL, &writefds, NULL, &tv);
 				if(r > 0 && ! do_exit) {
 					bytessent = send(s[1],	&curelem->data[index], bytesleft, 0);
+				/* 	fprintf(stderr, "Sending %d bytes\n", bytessent);
+					fflush(stderr); */
 					bytesleft -= bytessent;
 					index += bytessent;
 				}
@@ -495,7 +564,7 @@ static void *command_worker(void *arg)
 				airspy_set_rf_bias(dev, (int)ntohl(cmd.param));
 				p_bias_tee = (int)ntohl(cmd.param);
 				break;
-			case 0x60:
+			case 0x0a:
 				if (cmd.param) {
 						fprintf(stderr, "start streaming i/q samples\n");
 						fflush(stderr);
@@ -811,7 +880,7 @@ int main(int argc, char **argv)
 		fflush(stdout);
 	} else {
 #endif
-		printf("listening...\nUse the device argument 'rtl_tcp=%s:%d' in OsmoSDR "
+		printf("listening...\nUse the device argument 'airspy_tcp=%s:%d' in OsmoSDR "
 			"(gr-osmosdr) source\n"
 			"to receive samples in GRC and control "
 			"rtl_tcp parameters (frequency, gain, ...).\n",
@@ -881,7 +950,10 @@ int main(int argc, char **argv)
 		} else {
 			wait_for_start = 1;
 		}
-		fprintf(stderr, "Client accepted!\n");
+		struct timespec ts;
+
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		fprintf(stderr, "Client accepted at %ld!\n", ts.tv_sec);
 		fflush(stderr);
 
 
