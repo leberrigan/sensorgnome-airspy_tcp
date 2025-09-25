@@ -78,7 +78,7 @@ struct llist {
 	typedef struct {
 			uint32_t size;      // size of this header plus number of sample bytes before next header
 			double ts;          // double timestamp of first sample in stream
-	} stream_segment_hdr_t;
+	} airspy_stream_segment_hdr_t;
 #endif
 
 typedef struct { /* structure size must be multiple of 2 bytes */
@@ -183,8 +183,8 @@ static int rx_callback(airspy_transfer_t* transfer)
 	    uint32_t needlen;
 		
 		#ifndef _WIN32
-			stream_segment_hdr_t *hdr;
-			needlen = len + sizeof(stream_segment_hdr_t);
+			airspy_stream_segment_hdr_t *hdr;
+			needlen = len + sizeof(airspy_stream_segment_hdr_t);
 		#else
 			needlen = len;
 		#endif
@@ -193,13 +193,13 @@ static int rx_callback(airspy_transfer_t* transfer)
 		dest = rpt->data;
 		
 		#ifndef _WIN32
-			/* fill in stream_segment_hdr_t and set dest to point after it  */
-			hdr = (stream_segment_hdr_t *) rpt->data;
+			/* fill in airspy_stream_segment_hdr_t and set dest to point after it  */
+			hdr = (airspy_stream_segment_hdr_t *) rpt->data;
 			clock_gettime(CLOCK_REALTIME, &ts);
 			/* set start-of-buffer timestamp to current clock minus (# frames) * rate */
 			hdr->ts = ts.tv_sec + ts.tv_nsec / 1.0e9 - (len / 2.0) / samp_rate;
-			hdr->size = len + sizeof(stream_segment_hdr_t);
-			dest += sizeof(stream_segment_hdr_t);
+			hdr->size = len + sizeof(airspy_stream_segment_hdr_t);
+			dest += sizeof(airspy_stream_segment_hdr_t);
 		#endif
 	
 		/* int i;
