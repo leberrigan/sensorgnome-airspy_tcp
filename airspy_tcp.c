@@ -32,7 +32,6 @@
 	#include <arpa/inet.h>
 	#include <sys/socket.h>
 	#include <sys/types.h>
-	#include <sys/socket.h>
 	#include <sys/time.h>
 	#include <netinet/in.h>
 	#include <fcntl.h>
@@ -73,6 +72,11 @@ struct llist {
 	struct llist *next;
 };
 
+static FILE *iq_fp = NULL;
+
+static int dump_count = 0;
+
+
 #ifndef _WIN32
 	/* sample stream header, for embedding in output stream for clients */
 	typedef struct {
@@ -88,7 +92,7 @@ typedef struct { /* structure size must be multiple of 2 bytes */
 } dongle_info_t;
 
 static struct airspy_device* dev = NULL;
-static uint32_t samp_rate = 3000000;
+static uint32_t samp_rate = 6e6;
 
 static uint32_t fscount,*supported_samplerates;
 static int verbose=0;
@@ -102,6 +106,7 @@ static struct llist *ls_buffer = NULL;
 static struct llist *le_buffer = NULL;
 static int llbuf_num = 64; */
 static struct llist *ll_buffers = 0;
+static struct llist *ll_tail = NULL;
 static int llbuf_num = 500;
 
 static volatile int do_exit = 0;
@@ -113,13 +118,15 @@ static int usb_buffer_size = 0;
 
 static
 uint32_t p_freq = 0,
-		p_gain = 0,
-		p_agc = 0,
         p_lna_gain = 0,
 		p_mixer_gain = 0,
 		p_vga_gain = 0,
-		p_tuner_gain = 0, 
-		p_bias_tee,
+		p_linearity_gain = 0,
+		p_sensitivity_gain = 0,
+		p_lna_agc = 0,
+		p_mixer_agc = 0,
+		p_agc = 0,
+		p_bias_tee = 0,
         p_streaming = 0;
 
 
@@ -181,91 +188,71 @@ static int rx_callback(airspy_transfer_t* transfer)
 	
 		len=2*transfer->sample_count;
 		buf=( short* )transfer->samples;
-
+/* 
 		if (transfer->sample_count == 0) {
 			fprintf(stderr, "[rx_callback] Warning: zero samples received\n");
 			fflush(stderr);
 			return 0;
-		} /* else {
+		} else {
 			fprintf(stderr, "[rx_callback] Samples received: %u\n", transfer->sample_count);
 			fflush(stderr);
-		} */
+		}   */
 
         char *dest;
 		struct llist *rpt = (struct llist*)malloc(sizeof(struct llist));
 	    uint32_t needlen;
-		
-		#ifndef _WIN32
-			airspy_stream_segment_hdr_t *hdr;
-			needlen = len + sizeof(airspy_stream_segment_hdr_t);
-		#else
-			needlen = len;
-		#endif
 	
+#ifndef _WIN32
+		airspy_stream_segment_hdr_t *hdr;
+		needlen = len + sizeof(airspy_stream_segment_hdr_t);
+#else
+		needlen = len;
+#endif
+
 		rpt->data = (char*)malloc(needlen);
 		dest = rpt->data;
 		
-		#ifndef _WIN32
-			/* fill in airspy_stream_segment_hdr_t and set dest to point after it  */
-			hdr = (airspy_stream_segment_hdr_t *) rpt->data;
-			clock_gettime(CLOCK_REALTIME, &ts);
-			/* set start-of-buffer timestamp to current clock minus (# frames) * rate */
-			hdr->ts = ts.tv_sec + ts.tv_nsec / 1.0e9 - (len / 2.0) / samp_rate;
-			hdr->size = len + sizeof(airspy_stream_segment_hdr_t);
-			dest += sizeof(airspy_stream_segment_hdr_t);
-		#endif
-	
-		/* int i;
-		char *data; */
+#ifndef _WIN32
+
+		/* fill in airspy_stream_segment_hdr_t and set dest to point after it  */
+		hdr = (airspy_stream_segment_hdr_t *) rpt->data;
+		clock_gettime(CLOCK_REALTIME, &ts);
+		/* set start-of-buffer timestamp to current clock minus (# frames) * rate */
+		hdr->ts = ts.tv_sec + ts.tv_nsec / 1.0e9 - (len / 2.0) / samp_rate;
+		hdr->size = len + sizeof(airspy_stream_segment_hdr_t);
+		dest += sizeof(airspy_stream_segment_hdr_t);
+#endif
 	
 		memcpy(dest, buf, len);
 
 		rpt->len = needlen;
 		rpt->next = NULL;
 
-		/* data=rpt->data; */
-	
-		/* for(i=0;i<len;i++,buf++,data++) {
-			short v=*buf<<dshift;
-			short o;
-
-			 // stupid added offset, because osmosdr client code 
-			 // try to compensate rtl dongle offset 
-			 o=(v-154)>>8;
-
-			// round to 8bits half up to even
-			if(v&0x80) {
-			 if(v&0x7f) {o++;} else { if(v&0x100) o++;}
-			}
-
-			*data=(unsigned char)((o&0xff)+128);
-		} */
-
 		pthread_mutex_lock(&ll_mutex);
-
-		/* if (ls_buffer == NULL)
-		{
-			ls_buffer = le_buffer = rpt;
+/* 
+		// Enqueue rpt onto ll_buffers with ll_tail maintained and global_numq updated
+		if (ll_buffers == NULL) {
+			ll_buffers = ll_tail = rpt;
+			global_numq = 1;
+		} else {
+			ll_tail->next = rpt;
+			ll_tail = rpt;
+			++global_numq;
 		}
-		else
-		{
-			le_buffer->next = rpt;
-			le_buffer = rpt;
+
+		// Enforce max queue length llbuf_num by dropping oldest entries
+		if (llbuf_num && global_numq > llbuf_num) {
+			struct llist *old = ll_buffers;
+			ll_buffers = old->next;
+			if (ll_buffers == NULL) ll_tail = NULL;
+			free(old->data);
+			free(old);
+			--global_numq;
+			fprintf(stderr, "Q_DROP,after_enqueue,global_numq=%d\n", global_numq);
+			fflush(stderr);
 		}
-		global_numq++;
-
-		if(global_numq>llbuf_num) {
-			struct llist *curelem;
-			curelem=ls_buffer;
-			ls_buffer=ls_buffer->next;
-			if(ls_buffer==NULL) le_buffer=NULL;
-			global_numq--;
-			free(curelem->data);
-			free(curelem);
-		} */
-
-		/* fprintf(stderr, "[rx_callback] Queued %u bytes (samples=%u)\n", needlen, transfer->sample_count);
-		fflush(stderr); */
+ */
+		
 
 		if (ll_buffers == NULL) {
 			ll_buffers = rpt;
@@ -300,8 +287,6 @@ static int rx_callback(airspy_transfer_t* transfer)
 
 static void *tcp_worker(void *arg)
 {
-	/* struct llist *curelem;
-	int bytesleft,bytessent, index; */
 
 	struct llist *curelem,*prev;
 	int bytesleft,bytessent, index;
@@ -312,65 +297,15 @@ static void *tcp_worker(void *arg)
 
 	while(1) {
 
-/* 		pthread_mutex_lock(&ll_mutex);
-		while(ls_buffer==NULL && do_exit==0)
-			pthread_cond_wait(&cond, &ll_mutex);
-
-		if(do_exit) {
-			pthread_mutex_unlock(&ll_mutex);
-			pthread_exit(0);
-		} */
 	
 		if(do_exit)
 			pthread_exit(0);
-/* 
-	 	if (!ts_ptr) {
-			fprintf(stderr, "[tcp_worker] Failed to allocate timespec\n");
-			pthread_exit(NULL);
-		}
-
-		// Get current time
-		clock_gettime(CLOCK_MONOTONIC, ts_ptr);
-
-		// Add 15 seconds to timeout
-		ts_ptr->tv_sec += 15;
-		ts_ptr->tv_nsec += 0; // optional fine-grained delay
-
-		// Normalize nanoseconds
-		if (ts_ptr->tv_nsec >= 1000000000) {
-			ts_ptr->tv_sec += 1;
-			ts_ptr->tv_nsec -= 1000000000;
-		}
-
-		// Log target timeout
-		fprintf(stderr, "[tcp_worker] Timeout target: %ld.%09ld\n", ts_ptr->tv_sec, ts_ptr->tv_nsec);
-
-		// Wait on condition
-		pthread_mutex_lock(&ll_mutex);
-		r = pthread_cond_timedwait(&cond, &ll_mutex, ts_ptr);
-
-		// Log result
-		struct timespec now;
-		clock_gettime(CLOCK_MONOTONIC, &now);
-		double waited = (now.tv_sec - ts_ptr->tv_sec) + (now.tv_nsec - ts_ptr->tv_nsec) / 1e9;
-
-		fprintf(stderr, "[tcp_worker] Waited %.6f seconds, return code = %d\n", waited, r);
- */
- 
 
 		pthread_mutex_lock(&ll_mutex);
 
 		clock_gettime(CLOCK_MONOTONIC, &ts);
-		
-		struct timespec start, end;
-		clock_gettime(CLOCK_MONOTONIC, &start);
 		ts.tv_sec += 5; // timeout in 5 seconds
 		ts.tv_nsec += 0; // optional fine-grained delay
-
-		if (ts.tv_nsec >= 1000000000) {
-			ts.tv_sec += 1;
-			ts.tv_nsec -= 1000000000;
-		}
 
 		// r = pthread_cond_timedwait(&cond, &ll_mutex, &ts);
 		r = pthread_cond_wait(&cond, &ll_mutex);
@@ -381,15 +316,9 @@ static void *tcp_worker(void *arg)
 			fprintf(stderr, "Worker cond timeout\n");
                         fflush(stderr);
 			do_exit = 1;
-			// free(ts_ptr);
 			pthread_exit(NULL);
 		}
-		// free(ts_ptr);
 
-
-		/* curelem = ls_buffer;
-		ls_buffer=ls_buffer->next;
-		global_numq--; */
 		curelem = ll_buffers;
 		ll_buffers = 0;
 		pthread_mutex_unlock(&ll_mutex);
@@ -406,8 +335,6 @@ static void *tcp_worker(void *arg)
 				r = select(s[1]+1, NULL, &writefds, NULL, &tv);
 				if(r > 0 && ! do_exit) {
 					bytessent = send(s[1],	&curelem->data[index], bytesleft, 0);
-				/* 	fprintf(stderr, "Sending %d bytes\n", bytessent);
-					fflush(stderr); */
 					bytesleft -= bytessent;
 					index += bytessent;
 				}
@@ -423,20 +350,6 @@ static void *tcp_worker(void *arg)
 			free(prev->data);
 			free(prev);
 		}
-	/* 	bytesleft = curelem->len;
-		index = 0;
-		while(bytesleft > 0) {
-			bytessent = send(s,  &curelem->data[index], bytesleft, 0);
-			bytesleft -= bytessent;
-			index += bytessent;
-			if(bytessent == SOCKET_ERROR || do_exit) {
-					printf("worker socket bye\n");
-					sighandler(0);
-					pthread_exit(NULL);
-			}
-		}
-		free(curelem->data);
-		free(curelem); */
 	}
 }
 
@@ -530,41 +443,51 @@ static void *command_worker(void *arg)
 				samp_rate = (int)ntohl(cmd.param);
 				break;
 			case 0x03:
-				if(verbose) printf("set gain: %d\n", ntohl(cmd.param));
-				airspy_set_linearity_gain(dev,(ntohl(cmd.param)+250)/37);
-				p_gain = (int)ntohl(cmd.param);
-				break;
-			case 0x04:
-				if(verbose) printf("set agc: %d\n", ntohl(cmd.param));
-				set_agc(ntohl(cmd.param));
-				p_agc = (int)ntohl(cmd.param);
-				break;
-			case 0x05:
 				if(verbose) printf("set lna gain: %d\n",ntohl(cmd.param));
 				airspy_set_lna_gain(dev, ntohl(cmd.param));
 				p_lna_gain = (int)ntohl(cmd.param);
 				break;
-			case 0x06:
+			case 0x04:
 				if(verbose) printf("set mixer gain: %d\n",ntohl(cmd.param));
 				airspy_set_mixer_gain(dev, ntohl(cmd.param));
 				p_mixer_gain = (int)ntohl(cmd.param);
 				break;
-			case 0x07:
+			case 0x05:
 				if(verbose) printf("set vga gain: %d\n",ntohl(cmd.param));
 				airspy_set_vga_gain(dev, ntohl(cmd.param));
 				p_vga_gain = (int)ntohl(cmd.param);
 				break;
+			case 0x06:
+				if(verbose) printf("set linearity gain: %d\n", ntohl(cmd.param));
+				airspy_set_linearity_gain(dev, (int)ntohl(cmd.param));
+				p_linearity_gain = (int)ntohl(cmd.param);
+				break;
+			case 0x07:
+				if(verbose) printf("set sensitivity gain: %d\n", ntohl(cmd.param));
+				airspy_set_sensitivity_gain(dev, (int)ntohl(cmd.param));
+				p_sensitivity_gain = (int)ntohl(cmd.param);
+				break;
 			case 0x08:
-				if(verbose) printf("set tuner gain: %d \n", ntohl(cmd.param));
-				airspy_set_linearity_gain(dev,ntohl(cmd.param));
-				p_tuner_gain = (int)ntohl(cmd.param);
+				if(verbose) printf("set lna agc: %d\n", ntohl(cmd.param));
+				airspy_set_lna_agc(dev, (int)ntohl(cmd.param));
+				p_lna_agc = (int)ntohl(cmd.param);
 				break;
 			case 0x09:
+				if(verbose) printf("set mixer agc: %d\n", ntohl(cmd.param));
+				airspy_set_mixer_agc(dev, (int)ntohl(cmd.param));
+				p_mixer_agc = (int)ntohl(cmd.param);
+				break;
+			case 0x0a:
+				if(verbose) printf("set lna and mixer agc: %d\n", ntohl(cmd.param));
+				set_agc(ntohl(cmd.param));
+				p_agc = (int)ntohl(cmd.param);
+				break;
+			case 0x0b:
 				if(verbose) printf("set bias tee: %d\n", ntohl(cmd.param));
 				airspy_set_rf_bias(dev, (int)ntohl(cmd.param));
 				p_bias_tee = (int)ntohl(cmd.param);
 				break;
-			case 0x0a:
+			case 0x0f:
 				if (cmd.param) {
 						fprintf(stderr, "start streaming i/q samples\n");
 						fflush(stderr);
@@ -588,23 +511,27 @@ static void *command_worker(void *arg)
 		sprintf(rbuf, "{"
 				"\"frequency\": %d,"
 				"\"rate\": %d,"
-				"\"gain\": %d,"
-				"\"agc\": %d,"
 				"\"lna_gain\": %d,"
 				"\"mixer_gain\": %d,"
 				"\"vga_gain\": %d,"
-				"\"tuner_gain\": %d,"
+				"\"linearity_gain\": %d,"
+				"\"sensitivity_gain\": %d,"
+				"\"lna_agc\": %d,"
+				"\"mixer_agc\": %d,"
+				"\"agc\": %d,"
 				"\"bias_tee\": %d,"
 				"\"streaming\": %d"
 				"}\n",
 				p_freq,
 				samp_rate,
-				p_gain,
-				p_agc,
 				p_lna_gain,
 				p_mixer_gain,
 				p_vga_gain,
-				p_tuner_gain,
+				p_linearity_gain,
+				p_sensitivity_gain,
+				p_lna_agc,
+				p_mixer_agc,
+				p_agc,
 				p_bias_tee,
 				p_streaming);
 
@@ -746,15 +673,19 @@ int main(int argc, char **argv)
                 	airspy_close(dev);
                 	airspy_exit();
                 	return -1;
-        	}
+        	} else {
+				fprintf(stderr,"Set sample rate to: %d", samp_rate);
+			}
 	} else {
-       		r=airspy_set_samplerate(dev, fscount-1);
+       		r = airspy_set_samplerate(dev, fscount-1);
         	if( r != AIRSPY_SUCCESS ) {
                 	fprintf(stderr,"airspy_set_samplerate() failed: %s (%d)\n", airspy_error_name(r), r);
                 	airspy_close(dev);
                 	airspy_exit();
                 	return -1;
-        	}
+        	} else {
+				fprintf(stderr,"Set sample rate to default: %d", fscount-1);
+			}
 	}
 
 	/* Set the frequency */
@@ -766,22 +697,16 @@ int main(int argc, char **argv)
 			return -1;
 	}
 
-	if (0 == gain) {
-	 /* Enable automatic gain */
-		r=set_agc(1);
-		if( r != AIRSPY_SUCCESS ) {
-				fprintf(stderr,"airspy_set agc failed: %s (%d)\n", airspy_error_name(r), r);
-		}
-	} else {
-        	r = airspy_set_linearity_gain(dev,(gain+250)/37);
-       		if( r != AIRSPY_SUCCESS ) {
-               		fprintf(stderr,"set gains failed: %s (%d)\n", airspy_error_name(r), r);
-               		airspy_close(dev);
-               		airspy_exit();
-               		return -1;
-       		}
-		if(verbose) fprintf(stderr, "Tuner gain set to %f dB.\n", gain/10.0);
+	if (0 == gain) gain = 1; // Default
+
+	r = airspy_set_linearity_gain(dev, gain);
+	if( r != AIRSPY_SUCCESS ) {
+			fprintf(stderr,"set gains failed: %s (%d)\n", airspy_error_name(r), r);
+			airspy_close(dev);
+			airspy_exit();
+			return -1;
 	}
+	if(verbose) fprintf(stderr, "Linearity gain set to %d\n", gain);
 
 	r = airspy_set_rf_bias(dev, enable_biastee);
 	if( r != AIRSPY_SUCCESS ) {
@@ -802,13 +727,20 @@ int main(int argc, char **argv)
 
 	pthread_mutex_init(&exit_cond_lock, NULL);
 	pthread_mutex_init(&ll_mutex, NULL);
-	pthread_mutex_init(&exit_cond_lock, NULL);
+//	pthread_mutex_init(&exit_cond_lock, NULL);
 
 	pthread_condattr_init(&cond_attr);
 	pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC);
 
 	pthread_cond_init(&cond, NULL);
 	pthread_cond_init(&exit_cond, NULL);
+		
+	iq_fp = fopen("/home/gnome/iq_dump_airspy.raw", "wb");
+	if (!iq_fp) {
+        fprintf(stderr, "Failed to open file at %s\n", "/home/gnome/iq_dump_airspy.raw");
+		fflush(stderr);
+    }
+
 /*
 	memset(&local,0,sizeof(local));
 	local.sin_family = AF_INET;
@@ -1032,6 +964,13 @@ out:
 	if (use_unix_sock)
 		unlink(sock_path);
 #endif
+
+	if (iq_fp) {
+		fclose(iq_fp);
+		iq_fp = NULL;
+	}
+
+
 	printf("bye!\n");
 	return r >= 0 ? r : -r;
 }
