@@ -75,6 +75,9 @@ struct llist {
 static FILE *iq_fp = NULL;
 
 static int dump_count = 0;
+static int rx_callback_count = 0;
+struct timespec prev_callback_ts;
+struct timespec sampling_ts;
 
 
 #ifndef _WIN32
@@ -106,7 +109,7 @@ static struct llist *ls_buffer = NULL;
 static struct llist *le_buffer = NULL;
 static int llbuf_num = 64; */
 static struct llist *ll_buffers = 0;
-static struct llist *ll_tail = NULL;
+//static struct llist *ll_tail = NULL;
 static int llbuf_num = 500;
 
 static volatile int do_exit = 0;
@@ -175,19 +178,17 @@ static void sighandler(int signum)
 
 static int rx_callback(airspy_transfer_t* transfer)
 {
-	
 	struct timespec ts;
-
 /* 	fprintf(stderr, "[rx_callback] do_exit = %d, wait_for_start = %d\n", do_exit, wait_for_start);
 	fflush(stderr); */
 
 	if(!do_exit && ! wait_for_start) {
 			
-		short *buf;
+		int16_t *buf;
 		uint32_t len;
 	
-		len=2*transfer->sample_count;
-		buf=( short* )transfer->samples;
+		len=2 * transfer->sample_count;
+		buf=( int16_t* )transfer->samples;
 /* 
 		if (transfer->sample_count == 0) {
 			fprintf(stderr, "[rx_callback] Warning: zero samples received\n");
@@ -197,6 +198,23 @@ static int rx_callback(airspy_transfer_t* transfer)
 			fprintf(stderr, "[rx_callback] Samples received: %u\n", transfer->sample_count);
 			fflush(stderr);
 		}   */
+/* 		if (dump_count > 1000 && dump_count < 2500) { // only dump one callback's worth
+			if (dump_count == 1001) {
+				fprintf(stderr, "rx_callback: dump started\n");
+				fflush(stderr);
+			}
+			if (iq_fp) {
+				fwrite(buf, 1, len, iq_fp);
+				fflush(iq_fp); // optional: flush to disk
+			}
+			dump_count++;
+		} else if (dump_count <= 1000) {
+			dump_count++;
+		} else {
+			fprintf(stderr, "rx_callback: dump ended\n");
+			fflush(stderr);
+			dump_count = 0;
+		} */
 
         char *dest;
 		struct llist *rpt = (struct llist*)malloc(sizeof(struct llist));
@@ -217,10 +235,42 @@ static int rx_callback(airspy_transfer_t* transfer)
 		/* fill in airspy_stream_segment_hdr_t and set dest to point after it  */
 		hdr = (airspy_stream_segment_hdr_t *) rpt->data;
 		clock_gettime(CLOCK_REALTIME, &ts);
+
 		/* set start-of-buffer timestamp to current clock minus (# frames) * rate */
-		hdr->ts = ts.tv_sec + ts.tv_nsec / 1.0e9 - (len / 2.0) / samp_rate;
+		//hdr->ts = ts.tv_sec + ts.tv_nsec / 1.0e9 - (transfer->sample_count) / samp_rate; // number of samples divided by sample rate = seconds of data
+		hdr->ts = sampling_ts.tv_sec + sampling_ts.tv_nsec / 1.0e9; // number of samples divided by sample rate = seconds of data
 		hdr->size = len + sizeof(airspy_stream_segment_hdr_t);
 		dest += sizeof(airspy_stream_segment_hdr_t);
+
+
+		double block_duration_sec = (double)transfer->sample_count / samp_rate;
+		long delta_sec = (long)block_duration_sec;
+		long delta_nsec = (long)((block_duration_sec - delta_sec) * 1e9);
+
+		sampling_ts.tv_sec += delta_sec;
+		sampling_ts.tv_nsec += delta_nsec;
+
+		// Normalize if nanoseconds overflow
+		if (sampling_ts.tv_nsec >= 1e9) {
+			sampling_ts.tv_sec += 1;
+			sampling_ts.tv_nsec -= 1e9;
+		}
+
+		/* 
+		if (rx_callback_count % 100 == 0  ) { // print every nth callback
+			// float ts_diff_ms = (ts.tv_sec * 1e3 + ts.tv_nsec / 1e6) - (prev_callback_ts.tv_sec * 1e3 + prev_callback_ts.tv_nsec / 1e6);
+			// double samples_per_s = (double)transfer->sample_count / (ts_diff_ms / 1e3);
+			float ts_diff_ms = (ts.tv_sec * 1e3 + ts.tv_nsec / 1e6) - (sampling_ts.tv_sec * 1e3 + sampling_ts.tv_nsec / 1e6);
+			//double samples_per_s = (double)transfer->sample_count / (ts_diff_ms / 1e3);
+			//if (ts_diff_ms > 8.29 || ts_diff_ms < 8.09) {// warn if outside 8.19 ms ± 0.1 ms
+			//	fprintf(stderr, "rx_callback: samples delivered = %u, samples_per_s = %f, ts_diff_ms = %.6f, samples_per_s_2 = %f, ts_diff_ms_2 = %.6f\n", transfer->sample_count, samples_per_s, ts_diff_ms,samples_per_s_2, ts_diff_ms_2 );
+				fprintf(stderr, "rx_callback: samples delivered = %u, ts_diff_ms = %.6f\n", transfer->sample_count, ts_diff_ms );
+				fflush(stderr);
+			//}
+		} 
+		rx_callback_count++; */
+//		prev_callback_ts = ts;
+		
 #endif
 	
 		memcpy(dest, buf, len);
@@ -266,8 +316,9 @@ static int rx_callback(airspy_transfer_t* transfer)
 			}
 
 			if(llbuf_num && llbuf_num == num_queued-2){
-				struct llist *curelem;
+				fprintf(stderr, "[WARN] Buffer overflow risk — dropping oldest buffer (llbuf_num=%d)\n", llbuf_num);
 
+				struct llist *curelem;
 				free(ll_buffers->data);
 				curelem = ll_buffers->next;
 				free(ll_buffers);
@@ -281,7 +332,10 @@ static int rx_callback(airspy_transfer_t* transfer)
 		pthread_cond_signal(&cond);
 		pthread_mutex_unlock(&ll_mutex);
 		
+	} else if (wait_for_start) {
+		clock_gettime(CLOCK_REALTIME, &sampling_ts);
 	}
+
 	return 0;
 }
 
@@ -314,7 +368,7 @@ static void *tcp_worker(void *arg)
 		if(r == ETIMEDOUT && ! wait_for_start) {
 			pthread_mutex_unlock(&ll_mutex);
 			fprintf(stderr, "Worker cond timeout\n");
-                        fflush(stderr);
+			fflush(stderr);
 			do_exit = 1;
 			pthread_exit(NULL);
 		}
@@ -375,8 +429,8 @@ static int set_samplerate(uint32_t fs)
 {
 	int r,i;
 
-        for(i=0;i<fscount;i++)
-      		if(supported_samplerates[i]==fs) break;
+	for(i=0;i<fscount;i++)
+		if(supported_samplerates[i]==fs) break;
 	if(i>=fscount) {
 		printf("sample rate %d not supported\n",fs);
 		return AIRSPY_ERROR_INVALID_PARAM;
@@ -479,8 +533,11 @@ static void *command_worker(void *arg)
 				break;
 			case 0x0a:
 				if(verbose) printf("set lna and mixer agc: %d\n", ntohl(cmd.param));
-				set_agc(ntohl(cmd.param));
+				r=set_agc(ntohl(cmd.param));
 				p_agc = (int)ntohl(cmd.param);
+				if (r != AIRSPY_SUCCESS)
+					fprintf(stderr, "set_agc failed: %s (%d)\n", airspy_error_name(r), r);
+					fflush(stderr);
 				break;
 			case 0x0b:
 				if(verbose) printf("set bias tee: %d\n", ntohl(cmd.param));
@@ -648,11 +705,11 @@ int main(int argc, char **argv)
 			return -1;
 	}
 
-	airspy_set_packing(dev, 1);
+	airspy_set_packing(dev, 0);
 
 	r=airspy_get_samplerates(dev, &fscount, 0);
 	if( r != AIRSPY_SUCCESS ) {
-			fprintf(stderr,"airspy_get_sample_rate() failed: %s (%d)\n", airspy_error_name(r), r);
+			fprintf(stderr,"airspy_get_samplerates() failed: %s (%d)\n", airspy_error_name(r), r);
 			airspy_close(dev);
 			airspy_exit();
 			return -1;
@@ -660,7 +717,7 @@ int main(int argc, char **argv)
 	supported_samplerates = (uint32_t *) malloc(fscount * sizeof(uint32_t));
 	r=airspy_get_samplerates(dev, supported_samplerates, fscount);
 	if( r != AIRSPY_SUCCESS ) {
-			fprintf(stderr,"airspy_get_sample_rate() failed: %s (%d)\n", airspy_error_name(r), r);
+			fprintf(stderr,"airspy_get_samplerates() failed: %s (%d)\n", airspy_error_name(r), r);
 			airspy_close(dev);
 			airspy_exit();
 			return -1;
@@ -912,6 +969,8 @@ int main(int argc, char **argv)
 			fflush(stderr);
 		}
 		pthread_attr_destroy(&attr);
+
+		clock_gettime(CLOCK_REALTIME, &sampling_ts);
 
 		fprintf(stderr,"start rx\n");
 		r = airspy_start_rx(dev, rx_callback, NULL);
